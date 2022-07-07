@@ -32,6 +32,7 @@ class Data(util.NamedEnum):
     lemmanotag = "lemmanotag"
     lematus = "lematus"
     unimorph = "unimorph"
+    net = "net"
 
 
 class Arch(util.NamedEnum):
@@ -120,7 +121,7 @@ class Trainer(BaseTrainer):
                 self.data = dataloader.StandardG2P(train, dev, test, params.shuffle)
             elif dataset == Data.p2g:
                 self.data = dataloader.StandardP2G(train, dev, test, params.shuffle)
-            elif dataset == Data.news15:
+            elif dataset in {Data.news15, Data.net}:
                 self.data = dataloader.Transliteration(train, dev, test, params.shuffle)
             elif dataset == Data.histnorm:
                 self.data = dataloader.Histnorm(train, dev, test, params.shuffle)
@@ -237,7 +238,7 @@ class Trainer(BaseTrainer):
             else:
                 raise ValueError
         else:
-            if dataset == Data.news15:
+            if dataset in {Data.news15, Data.net}:
                 self.evaluator = util.TranslitEvaluator()
             elif dataset == Data.g2p:
                 self.evaluator = util.G2PEvaluator()

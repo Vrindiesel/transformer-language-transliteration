@@ -591,12 +591,31 @@ class AlignStandardG2P(AlignSeq2SeqDataLoader, StandardG2P):
 
 class Transliteration(Seq2SeqDataLoader):
     def read_file(self, file):
+        if file.endswith(".xml"):
+            return self._read_file_xml(file)
+        else:
+            return self._read_file_f12(file)
+
+
+
+    def _read_file_xml(self, file):
         root = xml.etree.ElementTree.parse(file).getroot()
         for names in root.findall("Name"):
             names = [n.text for n in names]
             src, trgs = names[0], names[1:]
             for trg in trgs:
                 yield list(src), list(trg)
+
+    def _read_file_f12(self, file):
+        with open(file, "r") as source_file:
+            for line in source_file:
+                if line:
+                    items = line.split()
+                    assert len(items) > 1
+                    src, trg = items[0].strip(), items[1:]
+                    yield list(src), list(trg)
+
+
 
 
 class AlignTransliteration(AlignSeq2SeqDataLoader, Transliteration):
