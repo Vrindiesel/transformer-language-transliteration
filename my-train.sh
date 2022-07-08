@@ -1,4 +1,7 @@
 
+
+
+
 pair=wd_arabic
 arch=transformer
 
@@ -18,15 +21,23 @@ embed_dim=256
 nb_heads=4
 dropout=${2:-0.3}
 
+inputPrefix=$1
+#modelDir=$2
+
 data_dir=data/NET
 ckpt_dir=checkpoints
+modelDir=$ckpt_dir/$arch/net-dropout$dropout/$pair
+
+paste <(cut -f1,2 "${inputPrefix}.train80.train64") > "${inputPrefix}.train80.train64.2c"
+paste <(cut -f1,2 "${inputPrefix}.train80.dev16") > "${inputPrefix}.train80.dev16.2c"
+paste <(cut -f1,2 "${inputPrefix}.test20") > "${inputPrefix}.test20.2c"
 
 python src/train.py \
     --dataset net \
-    --train $data_dir/${pair}_64_train.f12 \
-    --dev $data_dir/${pair}_16_dev.f12 \
-    --test $data_dir/${pair}_20_test.f12 \
-    --model $ckpt_dir/$arch/net-dropout$dropout/$pair \
+    --train "${data_dir}/${inputPrefix}.train80.train64.2c" \
+    --dev "${data_dir}/${inputPrefix}.train80.dev16.2c" \
+    --test "${data_dir}/${inputPrefix}.test20.2c" \
+    --model $modelDir \
     --embed_dim $embed_dim --src_hs $hs --trg_hs $hs --dropout $dropout --nb_heads $nb_heads \
     --label_smooth $label_smooth --total_eval $total_eval \
     --src_layer $layers --trg_layer $layers --max_norm 1 --lr $lr --shuffle \
