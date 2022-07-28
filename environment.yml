@@ -1,4 +1,3 @@
-name: nt
 channels:
   - pytorch
   - conda-forge
