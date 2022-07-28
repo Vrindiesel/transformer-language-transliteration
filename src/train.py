@@ -14,6 +14,9 @@ import util
 from decoding import Decode, get_decode_fn
 from trainer import BaseTrainer
 
+
+import dn_transformer
+
 tqdm.monitor_interval = 0
 
 tqdm = partial(tqdm, bar_format="{l_bar}{r_bar}")
@@ -33,6 +36,7 @@ class Data(util.NamedEnum):
     lematus = "lematus"
     unimorph = "unimorph"
     net = "net"
+    denoise = "denoise"
 
 
 class Arch(util.NamedEnum):
@@ -51,7 +55,7 @@ class Arch(util.NamedEnum):
     universaltransformer = "universaltransformer"
     tagtransformer = "tagtransformer"
     taguniversaltransformer = "taguniversaltransformer"
-
+    dntransformer = "dntransformer"
 
 class Trainer(BaseTrainer):
     """docstring for Trainer."""
@@ -84,7 +88,12 @@ class Trainer(BaseTrainer):
         parser.add_argument('--decode', default=Decode.greedy, type=Decode, choices=list(Decode))
         parser.add_argument('--mono', default=False, action='store_true', help='enforce monotonicity')
         parser.add_argument('--bestacc', default=False, action='store_true', help='select model by accuracy only')
+        parser.add_argument('--share_embed', default=False, action='store_true', help='share src and trg embeddings.')
         # fmt: on
+        parser.add_argument('--mask_prob', default=0.15, type=float, help='dropout prob')
+        parser.add_argument('--mask_mask_prob', default=0.8, type=float, help='dropout prob')
+        parser.add_argument('--mask_random_prob', default=0.15, type=float, help='dropout prob')
+        parser.add_argument('--eval_steps', default=None, type=int, help='dropout prob')
 
     def load_data(self, dataset, train, dev, test):
         assert self.data is None
@@ -123,6 +132,14 @@ class Trainer(BaseTrainer):
                 self.data = dataloader.StandardP2G(train, dev, test, params.shuffle)
             elif dataset in {Data.news15, Data.net}:
                 self.data = dataloader.Transliteration(train, dev, test, params.shuffle)
+            elif dataset in {Data.denoise}:
+                self.data = dataloader.DeNoising(train_file=train,
+                                                 dev_file=dev,
+                                                 test_file=test,
+                                                 shuffle=params.shuffle,
+                                                 mask_prob=params.mask_prob,
+                                                 mask_mask_prob=params.mask_mask_prob,
+                                                 mask_random_prob=params.mask_random_prob)
             elif dataset == Data.histnorm:
                 self.data = dataloader.Histnorm(train, dev, test, params.shuffle)
             elif dataset == Data.sigmorphon16task1:
@@ -168,6 +185,7 @@ class Trainer(BaseTrainer):
         kwargs["src_c2i"] = self.data.source_c2i
         kwargs["trg_c2i"] = self.data.target_c2i
         kwargs["attr_c2i"] = self.data.attr_c2i
+        kwargs["share_embeddings"] = params.share_embed
         model_class = None
         indtag, mono = True, True
         # fmt: off
@@ -190,6 +208,7 @@ class Trainer(BaseTrainer):
             Arch.hmm: model.HMMTransducer,
             Arch.hmmfull: model.FullHMMTransducer,
             Arch.transformer: transformer.Transformer,
+            Arch.dntransformer: dn_transformer.DNTransformer,
             Arch.universaltransformer: transformer.UniversalTransformer,
             Arch.tagtransformer: transformer.TagTransformer,
             Arch.taguniversaltransformer: transformer.TagUniversalTransformer,
@@ -240,6 +259,8 @@ class Trainer(BaseTrainer):
         else:
             if dataset in {Data.news15, Data.net}:
                 self.evaluator = util.TranslitEvaluator()
+            if dataset in {Data.denoise}:
+                self.evaluator = util.DNTransformerEvaluator(self.data.source)
             elif dataset == Data.g2p:
                 self.evaluator = util.G2PEvaluator()
             elif dataset == Data.p2g:
@@ -249,11 +270,11 @@ class Trainer(BaseTrainer):
             else:
                 self.evaluator = util.BasicEvaluator()
 
-    def evaluate(self, mode, batch_size, epoch_idx, decode_fn):
+    def evaluate(self, mode, batch_size, epoch_idx, decode_fn, mean_acc=None):
         self.model.eval()
         sampler, nb_batch = self.iterate_batch(mode, batch_size)
         results = self.evaluator.evaluate_all(
-            sampler, batch_size, nb_batch, self.model, decode_fn
+            sampler, batch_size, nb_batch, self.model, decode_fn, mean_acc=mean_acc
         )
         for result in results:
             self.logger.info(
@@ -267,15 +288,20 @@ class Trainer(BaseTrainer):
         sampler, nb_batch = self.iterate_batch(mode, batch_size)
         with open(f"{write_fp}.{mode}.tsv", "w") as fp:
             fp.write("prediction\ttarget\tloss\tdist\n")
-            for src, src_mask, trg, trg_mask in tqdm(
+            for batch_data in tqdm(
                 sampler(batch_size), total=nb_batch
             ):
+                if len(batch_data) == 4:
+                    src, src_mask, trg, trg_mask = batch_data
+                else:
+                    src, src_mask, trg, trg_mask, loss_mask = batch_data
                 pred, _ = decode_fn(self.model, src, src_mask)
                 self.evaluator.add(src, pred, trg)
 
-                data = (src, src_mask, trg, trg_mask)
-                losses = self.model.get_loss(data, reduction=False).cpu()
-
+                #data = (src, src_mask, trg, trg_mask)
+                losses, acc = self.model.get_loss(batch_data, reduction=False)
+                losses = losses.cpu()
+                #print(losses)
                 pred = util.unpack_batch(pred)
                 trg = util.unpack_batch(trg)
                 for p, t, loss in zip(pred, trg, losses):
@@ -289,6 +315,7 @@ class Trainer(BaseTrainer):
         return results
 
     def select_model(self):
+        #print("models:", self.models)
         best_res = [m for m in self.models if m.evaluation_result][0]
         best_acc = [m for m in self.models if m.evaluation_result][0]
         best_devloss = self.models[0]
@@ -312,9 +339,12 @@ class Trainer(BaseTrainer):
             elif (
                 type(self.evaluator) == util.TranslitEvaluator
                 or type(self.evaluator) == util.PairTranslitEvaluator
+                 or type(self.evaluator) == util.DNTransformerEvaluator
             ):
-                if (
-                    m.evaluation_result[0].res >= best_res.evaluation_result[0].res
+                if len(m.evaluation_result) == 1 and m.evaluation_result[0].res >= best_res.evaluation_result[0].res:
+                    best_res = m
+                elif ( len(m.evaluation_result) >= 2
+                    and m.evaluation_result[0].res >= best_res.evaluation_result[0].res
                     and m.evaluation_result[1].res >= best_res.evaluation_result[1].res
                 ):
                     best_res = m

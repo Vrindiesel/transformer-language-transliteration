@@ -19,8 +19,10 @@
 import itertools
 from ctypes import POINTER, c_int, c_void_p, cdll
 
-libalign = cdll.LoadLibrary("src/libalign.so")
-
+try:
+    libalign = cdll.LoadLibrary("src/libalign.so")
+except OSError as e:
+    libalign = cdll.LoadLibrary("../src/libalign.so")
 libalign_add_int_pair = libalign.add_int_pair
 libalign_clear_counts = libalign.clear_counts
 libalign_initial_align = libalign.initial_align

@@ -233,6 +233,7 @@ class Transformer(nn.Module):
         trg_c2i,
         attr_c2i,
         label_smooth,
+        share_embeddings=False,
         **kwargs
     ):
         """
@@ -253,7 +254,10 @@ class Transformer(nn.Module):
         self.label_smooth = label_smooth
         self.src_c2i, self.trg_c2i, self.attr_c2i = src_c2i, trg_c2i, attr_c2i
         self.src_embed = Embedding(src_vocab_size, embed_dim, padding_idx=PAD_IDX)
-        self.trg_embed = Embedding(trg_vocab_size, embed_dim, padding_idx=PAD_IDX)
+        if share_embeddings:
+            self.trg_embed = self.src_embed
+        else:
+            self.trg_embed = Embedding(src_vocab_size, embed_dim, padding_idx=PAD_IDX)
         self.position_embed = SinusoidalPositionalEmbedding(embed_dim, PAD_IDX)
         encoder_layer = TransformerEncoderLayer(
             d_model=embed_dim,

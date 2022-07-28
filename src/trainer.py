@@ -167,7 +167,7 @@ class BaseTrainer(object):
         elif params.optimizer == Optimizer.adadelta:
             self.optimizer = torch.optim.Adadelta(self.model.parameters(), params.lr)
         elif params.optimizer == Optimizer.adam:
-            self.optimizer = torch.optim.Adam(
+            self.optimizer = torch.optim.AdamW(
                 self.model.parameters(), params.lr, betas=(params.beta1, params.beta2)
             )
         elif params.optimizer == Optimizer.amsgrad:
@@ -221,14 +221,28 @@ class BaseTrainer(object):
         except AttributeError:
             return self.scheduler.get_lr()[0]
 
-    def train(self, epoch_idx, batch_size, max_norm):
+    def train(self, epoch_idx, batch_size, max_norm, eval_steps=None, decode_fn=None):
         logger, model = self.logger, self.model
         logger.info("At %d-th epoch with lr %f.", epoch_idx, self.get_lr())
         model.train()
         sampler, nb_batch = self.iterate_batch(TRAIN, batch_size)
         losses, cnt = 0, 0
+        train_acc = 0
+        is_first = True
         for batch in tqdm(sampler(batch_size), total=nb_batch):
+
+            if is_first:
+                src, src_mask, trg, trg_mask, loss_mask = batch
+                self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask, None, src, trg,
+                                              logger=self.logger)
+                is_first = False
+
             loss = model.get_loss(batch)
+            if isinstance(loss, tuple) and len(loss) == 2:
+                loss, acc = loss
+                train_acc += acc.item()
+            else:
+                acc = None
             self.optimizer.zero_grad()
             loss.backward()
             if max_norm > 0:
@@ -244,8 +258,17 @@ class BaseTrainer(object):
             self.global_steps += 1
             losses += loss.item()
             cnt += 1
+
+            if isinstance(self.params.eval_steps, int) and self.global_steps % self.params.eval_steps == 0:
+                _, _, _ = self._evaluate(decode_fn, epoch_idx, batch_size, save=True)
+                self.logger.info(f"* Running mean TRAIN MP accuracy: {round(100*train_acc / cnt, 6)}")
+                self.logger.info(f"* Running mean TRAIN MP loss: {round(100 * losses / cnt, 6)}")
+            #print(self.global_steps, self.params.max_steps)
+            #input(">>>")
+            if self.global_steps > self.params.max_steps: break
         loss = losses / cnt
-        self.logger.info(f"Running average train loss is {loss} at epoch {epoch_idx}")
+        self.logger.info(f"Epoch {epoch_idx}: Running AVG train loss {loss} @steps  ({self.global_steps})")
+
         return loss
 
     def iterate_batch(self, mode, batch_size):
@@ -258,15 +281,44 @@ class BaseTrainer(object):
         else:
             raise ValueError(f"wrong mode: {mode}")
 
-    def calc_loss(self, mode, batch_size, epoch_idx) -> float:
+    def calc_loss(self, mode, batch_size, epoch_idx, return_acc=None) -> float:
         self.model.eval()
         sampler, nb_batch = self.iterate_batch(mode, batch_size)
         loss, cnt = 0.0, 0
+        acc = 0
+        is_first = True
         for batch in tqdm(sampler(batch_size), total=nb_batch):
-            loss += self.model.get_loss(batch).item()
+            #if is_first:
+            #    src, src_mask, trg, trg_mask, loss_mask = batch
+            #    self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask, None, src, trg)
+
+            #loss += self.model.get_loss(batch).item()
+            l,a, preds = self.model.get_loss(batch, ret_preds=True)
+
+            #print()
+            loss += l.item()
             cnt += 1
+            acc += a.item()
+            if is_first:
+                #print("\n\n")
+                is_first = False
+                src, src_mask, trg, trg_mask, loss_mask = batch
+                #print(preds.size())
+                #print(src.size())
+                _, pred_ids = torch.topk(preds, 1)
+                #print(pred_ids.size())
+                if False:
+                    self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask,
+                                              pred_ids.view(preds.size(0), preds.size(1)), src, trg,
+                                              logger=self.logger)
+
+
         loss = loss / cnt
+        acc = acc / cnt
         self.logger.info(f"Average {mode} loss is {loss} at epoch {epoch_idx}")
+        self.logger.info(f"Average {mode} accuracy is {acc} at epoch {epoch_idx}")
+        if return_acc:
+            loss = loss, acc
         return loss
 
     def iterate_instance(self, mode):
@@ -310,11 +362,12 @@ class BaseTrainer(object):
             stop_status = not stop_early
         return stop_status
 
-    def save_model(
-        self, epoch_idx, devloss: float, eval_res: List[util.Eval], model_fp
-    ):
-        eval_tag = "".join(["{}_{}.".format(e.desc, e.res) for e in eval_res])
-        fp = f"{model_fp}.nll_{devloss:.4f}.{eval_tag}epoch_{epoch_idx}"
+    def save_model(self, epoch_idx, devloss: float, eval_res: List[util.Eval], model_fp, dev_acc=None):
+        if dev_acc is None:
+            eval_tag = "".join(["{}_{}.".format(e.desc, e.res) for e in eval_res])
+        else:
+            eval_tag = f"DevAcc_{round(100*dev_acc, 4)}"
+        fp = f"{model_fp}.nll_{devloss:.4f}.{eval_tag}step_{self.global_steps}"
         torch.save(self.model, fp)
         self.models.append(Evaluation(fp, devloss, eval_res))
 
@@ -351,8 +404,11 @@ class BaseTrainer(object):
             for model in self.models:
                 if model.filepath in save_fps:
                     continue
-                os.remove(model.filepath)
-        os.remove(f"{model_fp}.progress")
+                if os.path.exists(model.filepath):
+                    os.remove(model.filepath)
+
+        if os.path.exists(f"{model_fp}.progress"):
+            os.remove(f"{model_fp}.progress")
 
     def run(self, start_epoch, decode_fn=None):
         """
@@ -366,7 +422,7 @@ class BaseTrainer(object):
             max_epochs = ceil(params.max_steps / steps_per_epoch)
         else:
             max_epochs = params.epochs
-        params.max_steps = max_epochs * steps_per_epoch
+        #params.max_steps = max_epochs * steps_per_epoch
         self.logger.info(
             f"maximum training {params.max_steps} steps ({max_epochs} epochs)"
         )
@@ -376,22 +432,30 @@ class BaseTrainer(object):
             eval_every = 1
         self.logger.info(f"evaluate every {eval_every} epochs")
         for epoch_idx in range(start_epoch, max_epochs):
-            self.train(epoch_idx, params.bs, params.max_norm)
+            self.train(epoch_idx, params.bs, params.max_norm, params.eval_steps, decode_fn)
             if not (
                 epoch_idx
                 and (epoch_idx % eval_every == 0 or epoch_idx + 1 == max_epochs)
             ):
                 continue
-            with torch.no_grad():
-                devloss = self.calc_loss(DEV, params.bs, epoch_idx)
-                eval_res = self.evaluate(DEV, params.bs, epoch_idx, decode_fn)
+            devloss, eval_res, dev_acc = self._evaluate(decode_fn, epoch_idx, params.bs)
             if self.update_lr_and_stop_early(epoch_idx, devloss, params.estop):
                 finish = True
                 break
-            self.save_model(epoch_idx, devloss, eval_res, params.model)
+            self.save_model(epoch_idx, devloss, eval_res, params.model, dev_acc)
             self.save_training(params.model)
         if finish or params.cleanup_anyway:
             best_fp, save_fps = self.select_model()
             with torch.no_grad():
                 self.reload_and_test(params.model, best_fp, params.bs, decode_fn)
             self.cleanup(params.saveall, save_fps, params.model)
+
+    def _evaluate(self, decode_fn, epoch_idx, bs, save=True):
+        with torch.no_grad():
+            devloss, acc = self.calc_loss(DEV, bs, epoch_idx, return_acc=True)
+            eval_res = self.evaluate(DEV, bs, epoch_idx, decode_fn, acc)
+
+        if save:
+            self.save_model(None, devloss, eval_res, self.params.model, acc)
+
+        return devloss, eval_res, acc

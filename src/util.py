@@ -15,7 +15,7 @@ import numpy as np
 from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 
-from dataloader import BOS_IDX, EOS_IDX, STEP_IDX
+from data_conf import BOS_IDX, EOS_IDX, STEP_IDX, PAD_IDX
 
 tqdm = partial(tqdm, bar_format="{l_bar}{r_bar}")
 
@@ -119,10 +119,7 @@ def id_generator(size=6, chars=string.ascii_uppercase + string.digits):
 
 def unpack_batch(batch):
     if isinstance(batch, list) and isinstance(batch[0], list):
-        return [
-            [char for char in seq if char != BOS_IDX and char != EOS_IDX]
-            for seq in batch
-        ]
+        return [[char for char in seq ] for seq in batch]
     batch = batch.transpose(0, 1).cpu().numpy()
     bs, seq_len = batch.shape
     output = []
@@ -130,13 +127,13 @@ def unpack_batch(batch):
         seq = []
         for j in range(seq_len):
             elem = batch[i, j]
-            if elem == BOS_IDX:
-                continue
-            if elem == EOS_IDX:
-                break
             seq.append(elem)
         output.append(seq)
     return output
+
+
+
+
 
 
 @dataclass
@@ -163,7 +160,7 @@ class Evaluator(object):
         raise NotImplementedError
 
     def evaluate_all(
-        self, data_iter, batch_size, nb_data, model, decode_fn
+        self, data_iter, batch_size, nb_data, model, decode_fn, mean_acc=None
     ) -> List[Eval]:
         for src, src_mask, trg, trg_mask in tqdm(data_iter(batch_size), total=nb_data):
             pred, _ = decode_fn(model, src, src_mask)
@@ -336,6 +333,92 @@ class TranslitEvaluator(BasicEvaluator):
             Eval("acc", "accuracy", acc),
             Eval("meanfs", "mean F-score", mean_fscore),
         ]
+
+
+class DNTransformerEvaluator(TranslitEvaluator):
+    def __init__(self, i2c):
+        self.src_dict = defaultdict(list)
+        self.i2c = i2c
+
+
+    def evaluate_all(self, data_iter, batch_size, nb_data, model, decode_fn, mean_acc=None) -> List[Eval]:
+        is_first = True
+        N = 5
+        if mean_acc is None:
+            for src, src_mask, trg, trg_mask, loss_mask in tqdm(data_iter(batch_size), total=nb_data):
+                #if is_first:
+                #    self.print_examples(self.i2c, N, loss_mask, None, src, trg)
+                pred, _ = decode_fn(model, src, src_mask)
+                self.add(src, pred, trg)
+                #print("loss_mask:", loss_mask.size())
+                #if is_first:
+                #    is_first = False
+                #    self.print_examples(self.i2c, N, loss_mask, pred, src, trg)
+
+        return self.compute(reset=True, mean_acc=mean_acc)
+
+    @staticmethod
+    def print_examples(i2c, N, loss_mask, pred, src, trg, logger=None):
+        if pred is None:
+            u_pred = [[str(None)]] * N
+        else:
+            u_pred = unpack_batch(pred)
+        u_trg = unpack_batch(trg)
+        u_src = unpack_batch(src)
+        u_lm = unpack_batch(loss_mask)
+
+        if logger:
+            logger.info("Some Examples")
+            for ss, p, t, lm in zip(u_src[:N], u_pred[:N], u_trg[:N], u_lm[:N]):
+                length = t.index(PAD_IDX)
+                logger.info("-" * 10)
+                logger.info(f"input: {' '.join([i2c[j] for j in ss[:length]])}")
+                logger.info(f"targ: {' '.join([i2c[int(j)] for j in t[:length]])}")
+                logger.info(f"pred: {None if pred is None else ' '.join([i2c[j] for j in p[:length]])}" )
+                logger.info(f"LM: {lm[:length]}")
+        else:
+            print("Some Examples")
+            for ss, p, t, lm in zip(u_src[:N], u_pred[:N], u_trg[:N], u_lm[:N]):
+                print("-" * 10)
+                print("input:", [i2c[j] for j in ss])
+                print("targ:", [i2c[int(j)] for j in t])
+                print("pred:", None if pred is None else " ".join([i2c[j] for j in p]) )
+                print("LM:", lm)
+
+
+    def add(self, source, predict, target):
+        source = unpack_batch(source)
+        predict = unpack_batch(predict)
+        target = unpack_batch(target)
+        for s, p, t in zip(source, predict, target):
+            correct, distance = self.evaluate(p, t)
+            self.src_dict[str(s)].append((correct, distance, len(p), len(t)))
+
+
+    def _compute_accuracy(self):
+        correct, nb_sample = 0, 0
+        for evals in self.src_dict.values():
+            corr, dist, pred_len, trg_len = evals[0]
+            for c, d, pl, tl in evals:
+                if c > corr:
+                    corr = c
+            correct += corr
+            nb_sample += 1
+
+        acc = round(correct / nb_sample * 100, 4)
+        return acc
+
+
+    def compute(self, reset=True, mean_acc=None):
+        acc = self._compute_accuracy() if mean_acc is None else mean_acc
+        if reset:
+            self.reset()
+        return [
+            Eval("acc", "accuracy", acc),
+        ]
+
+
+
 
 
 class PairTranslitEvaluator(PairBasicEvaluator, TranslitEvaluator):
