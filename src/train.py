@@ -15,8 +15,6 @@ from decoding import Decode, get_decode_fn
 from trainer import BaseTrainer
 
 
-import dn_transformer
-
 tqdm.monitor_interval = 0
 
 tqdm = partial(tqdm, bar_format="{l_bar}{r_bar}")
@@ -37,6 +35,7 @@ class Data(util.NamedEnum):
     unimorph = "unimorph"
     net = "net"
     denoise = "denoise"
+    dakshina = "dakshina"
 
 
 class Arch(util.NamedEnum):
@@ -56,6 +55,7 @@ class Arch(util.NamedEnum):
     tagtransformer = "tagtransformer"
     taguniversaltransformer = "taguniversaltransformer"
     dntransformer = "dntransformer"
+    fdntransformer = "fdntransformer"
 
 class Trainer(BaseTrainer):
     """docstring for Trainer."""
@@ -88,74 +88,58 @@ class Trainer(BaseTrainer):
         parser.add_argument('--decode', default=Decode.greedy, type=Decode, choices=list(Decode))
         parser.add_argument('--mono', default=False, action='store_true', help='enforce monotonicity')
         parser.add_argument('--bestacc', default=False, action='store_true', help='select model by accuracy only')
-        parser.add_argument('--share_embed', default=False, action='store_true', help='share src and trg embeddings.')
-        # fmt: on
-        parser.add_argument('--mask_prob', default=0.15, type=float, help='dropout prob')
-        parser.add_argument('--mask_mask_prob', default=0.8, type=float, help='dropout prob')
-        parser.add_argument('--mask_random_prob', default=0.15, type=float, help='dropout prob')
-        parser.add_argument('--eval_steps', default=None, type=int, help='dropout prob')
 
     def load_data(self, dataset, train, dev, test):
-        assert self.data is None
         logger = self.logger
         params = self.params
-        # fmt: off
-        if params.arch == Arch.hardmono:
-            if dataset == Data.sigmorphon17task1:
-                self.data = dataloader.AlignSIGMORPHON2017Task1(train, dev, test, params.shuffle)
-            elif dataset == Data.g2p:
-                self.data = dataloader.AlignStandardG2P(train, dev, test, params.shuffle)
-            elif dataset == Data.news15:
-                self.data = dataloader.AlignTransliteration(train, dev, test, params.shuffle)
+        if dataset is None:
+            # fmt: off
+            if params.arch == Arch.hardmono:
+                if dataset == Data.sigmorphon17task1:
+                    self.data = dataloader.AlignSIGMORPHON2017Task1(train, dev, test, params.shuffle)
+                elif dataset == Data.g2p:
+                    self.data = dataloader.AlignStandardG2P(train, dev, test, params.shuffle)
+                elif dataset == Data.news15:
+                    self.data = dataloader.AlignTransliteration(train, dev, test, params.shuffle)
+                else:
+                    raise ValueError
             else:
-                raise ValueError
-        else:
-            if dataset == Data.sigmorphon17task1:
-                if params.indtag:
-                    self.data = dataloader.TagSIGMORPHON2017Task1(train, dev, test, params.shuffle)
+                if dataset == Data.sigmorphon17task1:
+                    if params.indtag:
+                        self.data = dataloader.TagSIGMORPHON2017Task1(train, dev, test, params.shuffle)
+                    else:
+                        self.data = dataloader.SIGMORPHON2017Task1(train, dev, test, params.shuffle)
+                elif dataset == Data.unimorph:
+                    if params.indtag:
+                        self.data = dataloader.TagUnimorph(train, dev, test, params.shuffle)
+                    else:
+                        self.data = dataloader.Unimorph(train, dev, test, params.shuffle)
+                elif dataset == Data.sigmorphon19task1:
+                    assert isinstance(train, list) and len(train) == 2 and params.indtag
+                    self.data = dataloader.TagSIGMORPHON2019Task1(train, dev, test, params.shuffle)
+                elif dataset == Data.sigmorphon19task2:
+                    assert params.indtag
+                    self.data = dataloader.TagSIGMORPHON2019Task2(train, dev, test, params.shuffle)
+                elif dataset == Data.g2p:
+                    self.data = dataloader.StandardG2P(train, dev, test, params.shuffle)
+                elif dataset == Data.p2g:
+                    self.data = dataloader.StandardP2G(train, dev, test, params.shuffle)
+                elif dataset == Data.histnorm:
+                    self.data = dataloader.Histnorm(train, dev, test, params.shuffle)
+                elif dataset == Data.sigmorphon16task1:
+                    if params.indtag:
+                        self.data = dataloader.TagSIGMORPHON2016Task1(train, dev, test, params.shuffle)
+                    else:
+                        self.data = dataloader.SIGMORPHON2016Task1(train, dev, test, params.shuffle)
+                elif dataset == Data.lemma:
+                    if params.indtag:
+                        self.data = dataloader.TagLemmatization(train, dev, test, params.shuffle)
+                    else:
+                        self.data = dataloader.Lemmatization(train, dev, test, params.shuffle)
+                elif dataset == Data.lemmanotag:
+                    self.data = dataloader.LemmatizationNotag(train, dev, test, params.shuffle)
                 else:
-                    self.data = dataloader.SIGMORPHON2017Task1(train, dev, test, params.shuffle)
-            elif dataset == Data.unimorph:
-                if params.indtag:
-                    self.data = dataloader.TagUnimorph(train, dev, test, params.shuffle)
-                else:
-                    self.data = dataloader.Unimorph(train, dev, test, params.shuffle)
-            elif dataset == Data.sigmorphon19task1:
-                assert isinstance(train, list) and len(train) == 2 and params.indtag
-                self.data = dataloader.TagSIGMORPHON2019Task1(train, dev, test, params.shuffle)
-            elif dataset == Data.sigmorphon19task2:
-                assert params.indtag
-                self.data = dataloader.TagSIGMORPHON2019Task2(train, dev, test, params.shuffle)
-            elif dataset == Data.g2p:
-                self.data = dataloader.StandardG2P(train, dev, test, params.shuffle)
-            elif dataset == Data.p2g:
-                self.data = dataloader.StandardP2G(train, dev, test, params.shuffle)
-            elif dataset in {Data.news15, Data.net}:
-                self.data = dataloader.Transliteration(train, dev, test, params.shuffle)
-            elif dataset in {Data.denoise}:
-                self.data = dataloader.DeNoising(train_file=train,
-                                                 dev_file=dev,
-                                                 test_file=test,
-                                                 shuffle=params.shuffle,
-                                                 mask_prob=params.mask_prob,
-                                                 mask_mask_prob=params.mask_mask_prob,
-                                                 mask_random_prob=params.mask_random_prob)
-            elif dataset == Data.histnorm:
-                self.data = dataloader.Histnorm(train, dev, test, params.shuffle)
-            elif dataset == Data.sigmorphon16task1:
-                if params.indtag:
-                    self.data = dataloader.TagSIGMORPHON2016Task1(train, dev, test, params.shuffle)
-                else:
-                    self.data = dataloader.SIGMORPHON2016Task1(train, dev, test, params.shuffle)
-            elif dataset == Data.lemma:
-                if params.indtag:
-                    self.data = dataloader.TagLemmatization(train, dev, test, params.shuffle)
-                else:
-                    self.data = dataloader.Lemmatization(train, dev, test, params.shuffle)
-            elif dataset == Data.lemmanotag:
-                self.data = dataloader.LemmatizationNotag(train, dev, test, params.shuffle)
-            else:
-                raise ValueError
+                    raise ValueError
         # fmt: on
         logger.info("src vocab size %d", self.data.source_vocab_size)
         logger.info("trg vocab size %d", self.data.target_vocab_size)
@@ -167,6 +151,18 @@ class Trainer(BaseTrainer):
         params = self.params
         if params.arch == Arch.hardmono:
             params.indtag, params.mono = True, True
+        model_class, kwargs = self.get_model_class(params)
+        self.model = model_class(**kwargs)
+        if params.indtag:
+            self.logger.info("number of attribute %d", self.model.nb_attr)
+            self.logger.info("dec 1st rnn %r", self.model.dec_rnn.layers[0])
+        if params.arch in {Arch.softinputfeed, Arch.approxihardinputfeed, Arch.largesoftinputfeed}:
+            self.logger.info("merge_input with %r", self.model.merge_input)
+        self.logger.info("model: %r", self.model)
+        self.logger.info("number of parameter %d", self.model.count_nb_params())
+        self.model = self.model.to(self.device)
+
+    def get_model_class(self, params):
         kwargs = dict()
         kwargs["src_vocab_size"] = self.data.source_vocab_size
         kwargs["trg_vocab_size"] = self.data.target_vocab_size
@@ -185,7 +181,7 @@ class Trainer(BaseTrainer):
         kwargs["src_c2i"] = self.data.source_c2i
         kwargs["trg_c2i"] = self.data.target_c2i
         kwargs["attr_c2i"] = self.data.attr_c2i
-        kwargs["share_embeddings"] = params.share_embed
+
         model_class = None
         indtag, mono = True, True
         # fmt: off
@@ -208,7 +204,6 @@ class Trainer(BaseTrainer):
             Arch.hmm: model.HMMTransducer,
             Arch.hmmfull: model.FullHMMTransducer,
             Arch.transformer: transformer.Transformer,
-            Arch.dntransformer: dn_transformer.DNTransformer,
             Arch.universaltransformer: transformer.UniversalTransformer,
             Arch.tagtransformer: transformer.TagTransformer,
             Arch.taguniversaltransformer: transformer.TagUniversalTransformer,
@@ -217,20 +212,8 @@ class Trainer(BaseTrainer):
         if params.indtag or params.mono:
             model_class = fancy_classfactory[(params.arch, params.indtag, params.mono)]
         else:
-            model_class = regular_classfactory[params.arch]
-        self.model = model_class(**kwargs)
-        if params.indtag:
-            self.logger.info("number of attribute %d", self.model.nb_attr)
-            self.logger.info("dec 1st rnn %r", self.model.dec_rnn.layers[0])
-        if params.arch in [
-            Arch.softinputfeed,
-            Arch.approxihardinputfeed,
-            Arch.largesoftinputfeed,
-        ]:
-            self.logger.info("merge_input with %r", self.model.merge_input)
-        self.logger.info("model: %r", self.model)
-        self.logger.info("number of parameter %d", self.model.count_nb_params())
-        self.model = self.model.to(self.device)
+            model_class = regular_classfactory.get(params.arch)
+        return model_class, kwargs
 
     def dump_state_dict(self, filepath):
         util.maybe_mkdir(filepath)
@@ -241,7 +224,11 @@ class Trainer(BaseTrainer):
 
     def load_state_dict(self, filepath):
         state_dict = torch.load(filepath)
-        self.model.load_state_dict(state_dict)
+        try:
+            self.model.load_state_dict(state_dict)
+        except AttributeError as e:
+            self.model.state_dict()
+
         self.model = self.model.to(self.device)
         self.logger.info(f"load from {filepath}")
 
@@ -257,10 +244,8 @@ class Trainer(BaseTrainer):
             else:
                 raise ValueError
         else:
-            if dataset in {Data.news15, Data.net}:
+            if dataset == Data.news15:
                 self.evaluator = util.TranslitEvaluator()
-            if dataset in {Data.denoise}:
-                self.evaluator = util.DNTransformerEvaluator(self.data.source)
             elif dataset == Data.g2p:
                 self.evaluator = util.G2PEvaluator()
             elif dataset == Data.p2g:
@@ -288,20 +273,8 @@ class Trainer(BaseTrainer):
         sampler, nb_batch = self.iterate_batch(mode, batch_size)
         with open(f"{write_fp}.{mode}.tsv", "w") as fp:
             fp.write("prediction\ttarget\tloss\tdist\n")
-            for batch_data in tqdm(
-                sampler(batch_size), total=nb_batch
-            ):
-                if len(batch_data) == 4:
-                    src, src_mask, trg, trg_mask = batch_data
-                else:
-                    src, src_mask, trg, trg_mask, loss_mask = batch_data
-                pred, _ = decode_fn(self.model, src, src_mask)
-                self.evaluator.add(src, pred, trg)
-
-                #data = (src, src_mask, trg, trg_mask)
-                losses, acc = self.model.get_loss(batch_data, reduction=False)
-                losses = losses.cpu()
-                #print(losses)
+            for batch_data in tqdm(sampler(batch_size), total=nb_batch):
+                losses, pred, trg = self.predict_and_decode(batch_data, decode_fn)
                 pred = util.unpack_batch(pred)
                 trg = util.unpack_batch(trg)
                 for p, t, loss in zip(pred, trg, losses):
@@ -314,6 +287,18 @@ class Trainer(BaseTrainer):
         results = self.evaluator.compute(reset=True)
         return results
 
+    def predict_and_decode(self, batch_data, decode_fn):
+        if len(batch_data) == 4:
+            src, src_mask, trg, trg_mask = batch_data
+        else:
+            src, src_mask, trg, trg_mask, loss_mask = batch_data
+        pred, _ = decode_fn(self.model, src, src_mask)
+        self.evaluator.add(src, pred, trg)
+        # data = (src, src_mask, trg, trg_mask)
+        losses, acc = self.model.get_loss(batch_data, reduction=False)
+        losses = losses.cpu()
+        return losses, pred, trg
+
     def select_model(self):
         #print("models:", self.models)
         best_res = [m for m in self.models if m.evaluation_result][0]
@@ -322,34 +307,8 @@ class Trainer(BaseTrainer):
         for m in self.models:
             if not m.evaluation_result:
                 continue
-            if (
-                type(self.evaluator) == util.BasicEvaluator
-                or type(self.evaluator) == util.PairBasicEvaluator
-                or type(self.evaluator) == util.G2PEvaluator
-                or type(self.evaluator) == util.PairG2PEvaluator
-                or type(self.evaluator) == util.P2GEvaluator
-                or type(self.evaluator) == util.HistnormEvaluator
-            ):
-                # [acc, edit distance / per ]
-                if (
-                    m.evaluation_result[0].res >= best_res.evaluation_result[0].res
-                    and m.evaluation_result[1].res <= best_res.evaluation_result[1].res
-                ):
-                    best_res = m
-            elif (
-                type(self.evaluator) == util.TranslitEvaluator
-                or type(self.evaluator) == util.PairTranslitEvaluator
-                 or type(self.evaluator) == util.DNTransformerEvaluator
-            ):
-                if len(m.evaluation_result) == 1 and m.evaluation_result[0].res >= best_res.evaluation_result[0].res:
-                    best_res = m
-                elif ( len(m.evaluation_result) >= 2
-                    and m.evaluation_result[0].res >= best_res.evaluation_result[0].res
-                    and m.evaluation_result[1].res >= best_res.evaluation_result[1].res
-                ):
-                    best_res = m
-            else:
-                raise NotImplementedError
+            #best_acc, best_res, best_devloss = self._score_update_best(best_acc, best_devloss, best_res, m)
+            best_acc, best_res, best_devloss = self._score_update_best(best_res, m)
             if m.evaluation_result[0].res >= best_acc.evaluation_result[0].res:
                 best_acc = m
             if m.devloss <= best_devloss.devloss:
@@ -359,6 +318,37 @@ class Trainer(BaseTrainer):
         else:
             best_fp = best_res.filepath
         return best_fp, set([best_fp])
+
+    def _score_update_best(self, best_res, m):
+        if (
+                type(self.evaluator) == util.BasicEvaluator
+                or type(self.evaluator) == util.PairBasicEvaluator
+                or type(self.evaluator) == util.G2PEvaluator
+                or type(self.evaluator) == util.PairG2PEvaluator
+                or type(self.evaluator) == util.P2GEvaluator
+                or type(self.evaluator) == util.HistnormEvaluator
+        ):
+            # [acc, edit distance / per ]
+            if (
+                    m.evaluation_result[0].res >= best_res.evaluation_result[0].res
+                    and m.evaluation_result[1].res <= best_res.evaluation_result[1].res
+            ):
+                best_res = m
+        elif (
+                type(self.evaluator) == util.TranslitEvaluator
+                or type(self.evaluator) == util.PairTranslitEvaluator
+        ):
+            if len(m.evaluation_result) == 1 and m.evaluation_result[0].res >= best_res.evaluation_result[0].res:
+                best_res = m
+            elif (len(m.evaluation_result) >= 2
+                  and m.evaluation_result[0].res >= best_res.evaluation_result[0].res
+                  and m.evaluation_result[1].res >= best_res.evaluation_result[1].res
+            ):
+                best_res = m
+        else:
+            raise NotImplementedError
+
+        return best_res
 
 
 def main():

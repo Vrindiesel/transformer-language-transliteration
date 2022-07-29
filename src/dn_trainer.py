@@ -14,10 +14,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 
 import util
-from vocabulary import Vocabulary
 
 tqdm.monitor_interval = 0
-
 tqdm = partial(tqdm, bar_format="{l_bar}{r_bar}")
 
 TRAIN = "train"
@@ -25,34 +23,8 @@ DEV = "dev"
 TEST = "test"
 
 
-class Optimizer(util.NamedEnum):
-    sgd = "sgd"
-    adadelta = "adadelta"
-    adam = "adam"
-    amsgrad = "amsgrad"
 
-
-class Scheduler(util.NamedEnum):
-    reducewhenstuck = "reducewhenstuck"
-    warmupinvsqr = "warmupinvsqr"
-
-
-def setup_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-@dataclass
-class Evaluation:
-    filepath: str
-    devloss: float
-    evaluation_result: Optional[List[util.Eval]]
-
-
-class BaseTrainer(object):
+class DNTrainer():
     """docstring for Trainer."""
 
     def __init__(self):
@@ -232,7 +204,7 @@ class BaseTrainer(object):
         is_first = True
         for batch in tqdm(sampler(batch_size), total=nb_batch):
 
-            if is_first:
+            if epoch_idx < 2 and is_first:
                 src, src_mask, trg, trg_mask, loss_mask = batch
                 self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask, None, src, trg,
                                               logger=self.logger)
@@ -294,16 +266,13 @@ class BaseTrainer(object):
             #    self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask, None, src, trg)
 
             #loss += self.model.get_loss(batch).item()
-            ret = self.model.get_loss(batch, ret_preds=True)
-            if len(ret) == 3:
-                l, a, preds = ret
-            else:
-                l, a = ret
+            l,a, preds = self.model.get_loss(batch, ret_preds=True)
+
             #print()
             loss += l.item()
             cnt += 1
             acc += a.item()
-            if is_first and len(batch) == 5:
+            if is_first:
                 #print("\n\n")
                 is_first = False
                 src, src_mask, trg, trg_mask, loss_mask = batch
@@ -374,14 +343,6 @@ class BaseTrainer(object):
         fp = f"{model_fp}.nll_{devloss:.4f}.{eval_tag}step_{self.global_steps}"
         torch.save(self.model, fp)
         self.models.append(Evaluation(fp, devloss, eval_res))
-
-        voc = Vocabulary({
-            "src": self.data.source,
-            "trg": self.data.target
-        })
-        voc.save(f"{model_fp}.vocab.json")
-
-
 
     def select_model(self):
         raise NotImplementedError

@@ -21,11 +21,9 @@ class DNTransformer(Transformer):
         compute loss
         """
         predict = predict.view(-1, self.trg_vocab_size)
-
         # nll_loss = F.nll_loss(predict, target.view(-1), ignore_index=PAD_IDX)
         target = target.view(-1, 1)
         non_pad_mask = target.ne(PAD_IDX)
-
         # accuracy
         _, pred_ids = torch.topk(predict, 1)
         accuracy = (pred_ids[non_pad_mask] == target[non_pad_mask]).float().mean()
@@ -36,23 +34,26 @@ class DNTransformer(Transformer):
             smooth_loss = smooth_loss / self.trg_vocab_size
             loss = (1.0 - self.label_smooth) * nll_loss + self.label_smooth * smooth_loss
         else:
-            loss = F.nll_loss(
-                predict, target.view(-1), ignore_index=PAD_IDX, reduction="none"
-            )
+            loss = F.nll_loss(predict, target.view(-1), ignore_index=PAD_IDX, reduction="none")
             loss = loss.view(target.shape)
             loss = loss.sum(dim=0) / (target != PAD_IDX).sum(dim=0)
-
         return loss, accuracy
 
+
     def get_loss(self, data, reduction=True, ret_preds=False):
-        src, src_mask, trg, trg_mask, loss_mask = data
-        out = self.forward(src, src_mask, trg, trg_mask)
-        loss, accuracy = self.loss(out[:-1], loss_mask[1:], reduction=reduction)
-        if ret_preds:
-            return loss, accuracy, out
+        if len(data) == 5:
+            src, src_mask, trg, trg_mask, loss_mask = data
+            out = self.forward(src, src_mask, trg, trg_mask)
+            loss, accuracy = self.loss(out[:-1], loss_mask[1:], reduction=reduction)
+            retval = [loss, accuracy]
+            if ret_preds:
+                retval.append(out)
+            retval = tuple(retval)
         else:
-            return loss, accuracy
+            retval = super().get_loss(data, reduction=reduction)
+        return retval
 
-
+class FinetunedDNTransformer(DNTransformer):
+    pass
 
 

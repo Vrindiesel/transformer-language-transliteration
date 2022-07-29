@@ -132,10 +132,6 @@ def unpack_batch(batch):
     return output
 
 
-
-
-
-
 @dataclass
 class Eval:
     desc: str
@@ -197,10 +193,25 @@ class BasicEvaluator(Evaluator):
         return correct, dist
 
     def add(self, source, predict, target):
+        #print()
+        #print(source[:, 0])
+        #print()
+        #print(target[:, 0])
+        #print()
+        #print(predict[:, 0])
+
         predict = unpack_batch(predict)
         target = unpack_batch(target)
         for p, t in zip(predict, target):
-            correct, distance = self.evaluate(p, t)
+
+            #print(t)
+            #print(p)
+            eow = t.index(EOS_IDX) + 1
+            correct, distance = self.evaluate(p[:eow], t[:eow])
+            #print("correct:", correct)
+            #print("dist:", distance)
+            #input(">>>")
+
             self.correct += correct
             self.distance += distance
             self.nb_sample += 1
@@ -299,7 +310,16 @@ class TranslitEvaluator(BasicEvaluator):
         predict = unpack_batch(predict)
         target = unpack_batch(target)
         for s, p, t in zip(source, predict, target):
+            eow = t.index(EOS_IDX) + 1
+            p, t = p[:eow], t[:eow]
+            #print()
+            #print(t)
+            #print(p)
             correct, distance = self.evaluate(p, t)
+            #self.src_dict[str(s)].append((correct, distance))
+            #print("correct:", correct)
+            #print("dist:", distance)
+            #input(">>>>")
             self.src_dict[str(s)].append((correct, distance, len(p), len(t)))
 
     def compute(self, reset=True):
@@ -370,7 +390,9 @@ class DNTransformerEvaluator(TranslitEvaluator):
         if logger:
             logger.info("Some Examples")
             for ss, p, t, lm in zip(u_src[:N], u_pred[:N], u_trg[:N], u_lm[:N]):
-                length = t.index(PAD_IDX)
+
+                length = t.index(PAD_IDX) if PAD_IDX in t else len(t)
+
                 logger.info("-" * 10)
                 logger.info(f"input: {' '.join([i2c[j] for j in ss[:length]])}")
                 logger.info(f"targ: {' '.join([i2c[int(j)] for j in t[:length]])}")
