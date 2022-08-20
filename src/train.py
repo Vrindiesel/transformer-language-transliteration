@@ -299,7 +299,7 @@ class Trainer(BaseTrainer):
         losses = losses.cpu()
         return losses, pred, trg
 
-    def select_model(self):
+    def select_model_new(self):
         #print("models:", self.models)
         best_res = [m for m in self.models if m.evaluation_result][0]
         best_acc = [m for m in self.models if m.evaluation_result][0]
@@ -319,31 +319,58 @@ class Trainer(BaseTrainer):
             best_fp = best_res.filepath
         return best_fp, set([best_fp])
 
-    def _score_update_best(self, best_res, m):
-        if (
-                type(self.evaluator) == util.BasicEvaluator
+    def select_model(self):
+        best_res = [m for m in self.models if m.evaluation_result][0]
+        best_acc = [m for m in self.models if m.evaluation_result][0]
+        best_devloss = self.models[0]
+        for m in self.models:
+            if not m.evaluation_result:
+                continue
+            if (type(self.evaluator) == util.BasicEvaluator
                 or type(self.evaluator) == util.PairBasicEvaluator
                 or type(self.evaluator) == util.G2PEvaluator
                 or type(self.evaluator) == util.PairG2PEvaluator
                 or type(self.evaluator) == util.P2GEvaluator
-                or type(self.evaluator) == util.HistnormEvaluator
-        ):
+                or type(self.evaluator) == util.HistnormEvaluator):
+                # [acc, edit distance / per ]
+                if (m.evaluation_result[0].res >= best_res.evaluation_result[0].res
+                    and m.evaluation_result[1].res <= best_res.evaluation_result[1].res):
+                    best_res = m
+            elif (type(self.evaluator) == util.TranslitEvaluator
+                or type(self.evaluator) == util.PairTranslitEvaluator):
+                if (m.evaluation_result[0].res >= best_res.evaluation_result[0].res
+                    and m.evaluation_result[1].res >= best_res.evaluation_result[1].res):
+                    best_res = m
+            else:
+                raise NotImplementedError
+            if m.evaluation_result[0].res >= best_acc.evaluation_result[0].res:
+                best_acc = m
+            if m.devloss <= best_devloss.devloss:
+                best_devloss = m
+        if self.params.bestacc:
+            best_fp = best_acc.filepath
+        else:
+            best_fp = best_res.filepath
+        return best_fp, set([best_fp])
+
+
+    def _score_update_best(self, best_res, m):
+        if (type(self.evaluator) == util.BasicEvaluator
+                or type(self.evaluator) == util.PairBasicEvaluator
+                or type(self.evaluator) == util.G2PEvaluator
+                or type(self.evaluator) == util.PairG2PEvaluator
+                or type(self.evaluator) == util.P2GEvaluator
+                or type(self.evaluator) == util.HistnormEvaluator):
             # [acc, edit distance / per ]
-            if (
-                    m.evaluation_result[0].res >= best_res.evaluation_result[0].res
-                    and m.evaluation_result[1].res <= best_res.evaluation_result[1].res
-            ):
+            if (m.evaluation_result[0].res >= best_res.evaluation_result[0].res
+                    and m.evaluation_result[1].res <= best_res.evaluation_result[1].res):
                 best_res = m
-        elif (
-                type(self.evaluator) == util.TranslitEvaluator
-                or type(self.evaluator) == util.PairTranslitEvaluator
-        ):
+        elif (type(self.evaluator) == util.TranslitEvaluator or type(self.evaluator) == util.PairTranslitEvaluator):
             if len(m.evaluation_result) == 1 and m.evaluation_result[0].res >= best_res.evaluation_result[0].res:
                 best_res = m
             elif (len(m.evaluation_result) >= 2
                   and m.evaluation_result[0].res >= best_res.evaluation_result[0].res
-                  and m.evaluation_result[1].res >= best_res.evaluation_result[1].res
-            ):
+                  and m.evaluation_result[1].res >= best_res.evaluation_result[1].res):
                 best_res = m
         else:
             raise NotImplementedError

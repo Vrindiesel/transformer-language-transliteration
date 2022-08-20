@@ -22,11 +22,12 @@ import json
 
 class DeNoising(dataloader.Seq2SeqDataLoader):
 
-    def __init__(self, mask_prob=0.15, mask_mask_prob=0.8, mask_random_prob=0.15, **kwargs):
+    def __init__(self, mask_prob=0.15, mask_mask_prob=0.8, mask_random_prob=0.15, mask_the_loss=True, **kwargs):
         super().__init__(**kwargs)
         self.mask_prob = mask_prob
         self.mask_mask_prob = mask_mask_prob
         self.mask_random_prob = mask_random_prob
+        self.mask_the_loss = mask_the_loss
         #self._lang_vocabs = None
         self.eval_randoms = {}
 
@@ -104,13 +105,11 @@ class DeNoising(dataloader.Seq2SeqDataLoader):
         #src_data, src_mask = self.list_to_tensor([self.random_char(src) for src in src_data])
         nb_example = len(src_data)
 
-
         if shuffle:
             idx = np.random.permutation(nb_example)
         else:
             idx = np.arange(nb_example)
 
-        is_first = True
         for start in range(0, nb_example, batch_size):
             idx_ = idx[start : start + batch_size]
             examples = [copy.deepcopy(src_data[dx]) for dx in idx_]
@@ -120,12 +119,15 @@ class DeNoising(dataloader.Seq2SeqDataLoader):
             #examples = [self.random_char(e, l) for e, l in zip(examples, lang_ids)]
             _expls, loss_mask = [], []
             for e, l in zip(examples, lang_ids):
-                output_mask = True
-                x, target_mask = self.random_chars(e, l, output_mask)
+                target_mask = None
+                x = self.random_chars(e, l, self.mask_the_loss)
+                if len(x) == 2:
+                    x, target_mask = x
+                    loss_mask.append(target_mask)
                 _expls.append(x)
-                loss_mask.append(target_mask)
+            if self.mask_the_loss:
+                loss_mask, _ = self.list_to_tensor(loss_mask)
 
-            loss_mask, _ = self.list_to_tensor(loss_mask)
             src_data_b, src_mask_b = self.list_to_tensor(_expls)
             #src_len = int(src_mask_b.sum(dim=0).max().item())
             #trg_len = src_len
@@ -136,9 +138,15 @@ class DeNoising(dataloader.Seq2SeqDataLoader):
             #if is_first and not shuffle:
             #    tutil.print_examples(self.source, 5, loss_mask, None, src_data_b, trg_data_b)
             #    is_first = False
-            yield (src_data_b.to(self.device), src_mask_b.to(self.device),
+
+            if self.mask_the_loss:
+                retval = (src_data_b.to(self.device), src_mask_b.to(self.device),
                    trg_data_b.to(self.device), trg_mask_b.to(self.device),
                    loss_mask.to(self.device))
+            else:
+                retval = (src_data_b.to(self.device), src_mask_b.to(self.device),
+                   trg_data_b.to(self.device), trg_mask_b.to(self.device))
+            yield retval
 
 
     def list_to_tensor(self, lst: List[List[int]], max_seq_len=None):

@@ -30,6 +30,8 @@ class Optimizer(util.NamedEnum):
     adadelta = "adadelta"
     adam = "adam"
     amsgrad = "amsgrad"
+    adamw = "adamw"
+
 
 
 class Scheduler(util.NamedEnum):
@@ -148,7 +150,13 @@ class BaseTrainer(object):
             loss_ = res[0].split("_")
             evals_ = res[1:-1]
             epoch_ = res[-1].split("_")
-            assert loss_[0] == "nll" and epoch_[0] == "epoch"
+            #print("model:", model)
+            #print("res:", res)
+            #print("loss_", loss_)
+            #print("evals_", evals_)
+            #print("epoch_", epoch_)
+
+            assert loss_[0] == "nll" and epoch_[0] in {"step", "epoch"}, (loss_[0],  epoch_[0])
             loss, epoch = float(loss_[1]), int(epoch_[1])
             evals = []
             for ev in evals_:
@@ -168,6 +176,10 @@ class BaseTrainer(object):
         elif params.optimizer == Optimizer.adadelta:
             self.optimizer = torch.optim.Adadelta(self.model.parameters(), params.lr)
         elif params.optimizer == Optimizer.adam:
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(), params.lr, betas=(params.beta1, params.beta2)
+            )
+        elif params.optimizer == Optimizer.adamw:
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(), params.lr, betas=(params.beta1, params.beta2)
             )
@@ -262,13 +274,13 @@ class BaseTrainer(object):
 
             if isinstance(self.params.eval_steps, int) and self.global_steps % self.params.eval_steps == 0:
                 _, _, _ = self._evaluate(decode_fn, epoch_idx, batch_size, save=True)
-                self.logger.info(f"* Running mean TRAIN MP accuracy: {round(100*train_acc / cnt, 6)}")
-                self.logger.info(f"* Running mean TRAIN MP loss: {round(100 * losses / cnt, 6)}")
+                self.logger.info(f"* (Running) Epoch {epoch_idx} avg TRAIN MP accuracy: {round(100*train_acc / cnt, 6)}")
+                self.logger.info(f"* (Running) epoch {epoch_idx} avg TRAIN MP loss: {round(100 * losses / cnt, 6)}")
             #print(self.global_steps, self.params.max_steps)
             #input(">>>")
             if self.global_steps > self.params.max_steps: break
         loss = losses / cnt
-        self.logger.info(f"Epoch {epoch_idx}: Running AVG train loss {loss} @steps  ({self.global_steps})")
+        self.logger.info(f"Epoch {epoch_idx} AVG train loss {loss} @steps  ({self.global_steps})")
 
         return loss
 
@@ -282,47 +294,18 @@ class BaseTrainer(object):
         else:
             raise ValueError(f"wrong mode: {mode}")
 
-    def calc_loss(self, mode, batch_size, epoch_idx, return_acc=None) -> float:
+    def _get_loss(self, batch):
+            return self.model.get_loss(batch)
+
+    def calc_loss(self, mode, batch_size, epoch_idx, return_acc=None, print_examples=False) -> float:
         self.model.eval()
         sampler, nb_batch = self.iterate_batch(mode, batch_size)
         loss, cnt = 0.0, 0
-        acc = 0
-        is_first = True
         for batch in tqdm(sampler(batch_size), total=nb_batch):
-            #if is_first:
-            #    src, src_mask, trg, trg_mask, loss_mask = batch
-            #    self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask, None, src, trg)
-
-            #loss += self.model.get_loss(batch).item()
-            ret = self.model.get_loss(batch, ret_preds=True)
-            if len(ret) == 3:
-                l, a, preds = ret
-            else:
-                l, a = ret
-            #print()
-            loss += l.item()
+            loss += self.model.get_loss(batch).item()
             cnt += 1
-            acc += a.item()
-            if is_first and len(batch) == 5:
-                #print("\n\n")
-                is_first = False
-                src, src_mask, trg, trg_mask, loss_mask = batch
-                #print(preds.size())
-                #print(src.size())
-                _, pred_ids = torch.topk(preds, 1)
-                #print(pred_ids.size())
-                if False:
-                    self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask,
-                                              pred_ids.view(preds.size(0), preds.size(1)), src, trg,
-                                              logger=self.logger)
-
-
         loss = loss / cnt
-        acc = acc / cnt
         self.logger.info(f"Average {mode} loss is {loss} at epoch {epoch_idx}")
-        self.logger.info(f"Average {mode} accuracy is {acc} at epoch {epoch_idx}")
-        if return_acc:
-            loss = loss, acc
         return loss
 
     def iterate_instance(self, mode):
@@ -367,10 +350,10 @@ class BaseTrainer(object):
         return stop_status
 
     def save_model(self, epoch_idx, devloss: float, eval_res: List[util.Eval], model_fp, dev_acc=None):
-        if dev_acc is None:
-            eval_tag = "".join(["{}_{}.".format(e.desc, e.res) for e in eval_res])
-        else:
-            eval_tag = f"DevAcc_{round(100*dev_acc, 4)}"
+        #if dev_acc is None:
+        eval_tag = "".join(["{}_{}.".format(e.desc, e.res) for e in eval_res])
+        #else:
+        #    eval_tag = f"DevAcc_{round(100*dev_acc, 4)}"
         fp = f"{model_fp}.nll_{devloss:.4f}.{eval_tag}step_{self.global_steps}"
         torch.save(self.model, fp)
         self.models.append(Evaluation(fp, devloss, eval_res))

@@ -627,8 +627,33 @@ class Transliteration(Seq2SeqDataLoader):
                     items = line.split()
                     assert len(items) > 1
                     src, trg = items[0].strip(),  items[1:]
+                    if str(trg[-1]) == "1":
+                        trg = trg[:-1]
                     yield list(src), list(trg)
 
+    def _read_file_f12_2(self, file):
+        """
+        banawan	ब न ा व न	1
+        ghalto	घ ल त ो	1
+        gorur	ग ो र ु र	1
+        raagul	र ा ग ु ल	1
+        ballaguda	ब ल ् ल ग ु ड ा	1
+        """
+        with open(file, "r") as source_file:
+            for line in source_file:
+                if not line: continue
+                line = line.split("\t")
+                if len(line) == 1:
+                    items = line[0].split()
+                    assert len(items) > 1
+                    src, trg = items[0].strip(),  items[1:]
+                    yield list(src), list(trg)
+                elif len(line) in {2, 3}:
+                    src = line[0].split()
+                    src = list(src) if len(src) > 1 else list(src[0])
+                    trg = line[1].split()
+                    trg = list(trg) if len(trg) > 1 else list(trg[0])
+                    yield src, trg
 
 
     def _iter_helper(self, file):

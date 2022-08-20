@@ -60,37 +60,37 @@ TOKENS_5=$TOKENS
 #printf "$TOKENS_2\\n$TOKENS_3\\n$TOKENS_4\\n$TOKENS_5\n$TOKENS_1" > temp.txt
 #python merge-counts.py temp.txt "../data/opus/all-counts.tsv"
 
-wc -l ../data/opus/*.tsv
-inputf_en="../data/opus/en-counts"
-inputf_hi="../data/opus/hi-counts"
-NUM_DEV=10000
-python normalize_opus.py "${inputf_en}.tsv" "${inputf_en}.normalized" --lang "en"
-python normalize_opus.py "${inputf_hi}.tsv" "${inputf_hi}.normalized" --lang "hi"
-
-python unify-langs.py "../data/opus/{lang}-counts.normalized" "../data/opus/{lang}-counts.normalized.unify"
-
-
-bash cross_validation_split-90-10.sh "${inputf_en}.normalized.unify"
-mv "${inputf_en}.normalized.unify.test" "${inputf_en}.test10"
-mv "${inputf_en}.normalized.unify.train" "${inputf_en}.train90"
-
-bash cross_validation_split-N.sh "${inputf_en}.train90" $NUM_DEV
-#mv "${inputf_en}.train90.train" "${inputf_en}.train90.train"
-mv "${inputf_en}.train90.test" "${inputf_en}.train90.dev${NUM_DEV}"
-
-
-bash cross_validation_split-90-10.sh "${inputf_hi}.normalized.unify"
-mv "${inputf_hi}.normalized.unify.test" "${inputf_hi}.test10"
-mv "${inputf_hi}.normalized.unify.train" "${inputf_hi}.train90"
-
-bash cross_validation_split-N.sh "${inputf_hi}.train90" $NUM_DEV
-#mv "${inputf_hi}.train90.train" "${inputf_hi}.train90.train"
-mv "${inputf_hi}.train90.test" "${inputf_hi}.train90.dev${NUM_DEV}"
-
-
-cat "${inputf_hi}.train90.train" "${inputf_en}.train90.train" > "../data/opus/hi-en.train90.train"
-cat "${inputf_hi}.train90.dev${NUM_DEV}" "${inputf_en}.train90.dev${NUM_DEV}" > "../data/opus/hi-en.train90.dev${NUM_DEV}"
-cat "${inputf_hi}.test10" "${inputf_en}.test10" > "../data/opus/hi-en.test10"
+#wc -l ../data/opus/*.tsv
+#inputf_en="../data/opus/en-counts"
+#inputf_hi="../data/opus/hi-counts"
+#NUM_DEV=10000
+#python normalize_opus.py "${inputf_en}.tsv" "${inputf_en}.normalized" --lang "en"
+#python normalize_opus.py "${inputf_hi}.tsv" "${inputf_hi}.normalized" --lang "hi"
+#
+#python unify-langs.py "../data/opus/{lang}-counts.normalized" "../data/opus/{lang}-counts.normalized.unify"
+#
+#
+#bash cross_validation_split-90-10.sh "${inputf_en}.normalized.unify"
+#mv "${inputf_en}.normalized.unify.test" "${inputf_en}.test10"
+#mv "${inputf_en}.normalized.unify.train" "${inputf_en}.train90"
+#
+#bash cross_validation_split-N.sh "${inputf_en}.train90" $NUM_DEV
+##mv "${inputf_en}.train90.train" "${inputf_en}.train90.train"
+#mv "${inputf_en}.train90.test" "${inputf_en}.train90.dev${NUM_DEV}"
+#
+#
+#bash cross_validation_split-90-10.sh "${inputf_hi}.normalized.unify"
+#mv "${inputf_hi}.normalized.unify.test" "${inputf_hi}.test10"
+#mv "${inputf_hi}.normalized.unify.train" "${inputf_hi}.train90"
+#
+#bash cross_validation_split-N.sh "${inputf_hi}.train90" $NUM_DEV
+##mv "${inputf_hi}.train90.train" "${inputf_hi}.train90.train"
+#mv "${inputf_hi}.train90.test" "${inputf_hi}.train90.dev${NUM_DEV}"
+#
+#
+#cat "${inputf_hi}.train90.train" "${inputf_en}.train90.train" > "../data/opus/hi-en.train90.train"
+#cat "${inputf_hi}.train90.dev${NUM_DEV}" "${inputf_en}.train90.dev${NUM_DEV}" > "../data/opus/hi-en.train90.dev${NUM_DEV}"
+#cat "${inputf_hi}.test10" "${inputf_en}.test10" > "../data/opus/hi-en.test10"
 
 
 

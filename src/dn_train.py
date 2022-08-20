@@ -3,7 +3,7 @@ train
 """
 import os
 from functools import partial
-
+import random
 import torch
 from tqdm import tqdm
 
@@ -12,6 +12,7 @@ import dataloader
 import model
 import transformer
 import util
+from util import Unpacker
 from decoding import Decode, get_decode_fn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
@@ -19,6 +20,8 @@ from train import Trainer, Data, Arch
 import train
 import trainer
 import dn_transformer
+import pandas as pd
+
 
 tqdm.monitor_interval = 0
 tqdm = partial(tqdm, bar_format="{l_bar}{r_bar}")
@@ -45,7 +48,8 @@ class DNTrainer(Trainer):
         parser.add_argument('--finetuning', default=False, action='store_true',
                             help='tie decoder input & output embeddings')
         parser.add_argument('--vocab_file', default=None, type=str, help='saved vocabulary json')
-
+        parser.add_argument("--mask_loss", default=False, action="store_true")
+        parser.add_argument("--load_eval", default=False, action="store_true")
 
     def load_data(self, dataset, train, dev, test):
         assert self.data is None
@@ -61,7 +65,8 @@ class DNTrainer(Trainer):
                                      mask_prob=params.mask_prob,
                                      mask_mask_prob=params.mask_mask_prob,
                                      mask_random_prob=params.mask_random_prob,
-                                     vocab_file=params.vocab_file)
+                                     vocab_file=params.vocab_file,
+                                     mask_the_loss=params.mask_loss)
         else:
             super(DNTrainer, self).load_data(dataset, train, dev, test)
         self.logger.info("src vocab size %d", self.data.source_vocab_size)
@@ -106,40 +111,113 @@ class DNTrainer(Trainer):
 
     def setup_evalutator(self):
         arch, dataset = self.params.arch, self.params.dataset
-        if dataset in {Data.denoise}:
+        if dataset in {Data.denoise} and arch == Arch.dntransformer:
             self.evaluator = util.DNTransformerEvaluator(self.data.source)
-        elif dataset in {Data.dakshina, Data.net}:
+
+        elif arch == Arch.fdntransformer:
+            self.evaluator = util.DNTransformerEvaluator(self.data.source)
+
+        elif dataset in {Data.dakshina, Data.net, Data.denoise}:
             self.evaluator = util.TranslitEvaluator()
             #self.evaluator = util.BasicEvaluator()
         else:
             super().setup_evalutator()
-        #print("evaluator:", self.evaluator)
+        print("Setting up evaluator: ", self.evaluator)
         #input(">>>")
 
     def evaluate(self, mode, batch_size, epoch_idx, decode_fn, mean_acc=None):
         self.model.eval()
         sampler, nb_batch = self.iterate_batch(mode, batch_size)
-        results = self.evaluator.evaluate_all(
-            sampler, batch_size, nb_batch, self.model, decode_fn, mean_acc=mean_acc
-        )
+        results = self.evaluator.evaluate_all(sampler, batch_size, nb_batch, self.model, decode_fn)
+        errors = None
+        if isinstance(self.evaluator, util.DNTransformerEvaluator):
+            results, errors = results
+
+        #results, errors = self.evaluator.evaluate_all(sampler, batch_size, nb_batch, self.model, decode_fn)
+        #self.decode(mode, batch_size, "outputs", decode_fn)
+        #print("results:", results)
         for result in results:
-            self.logger.info(
-                f"{mode} {result.long_desc} is {result.res} at epoch {epoch_idx}"
-            )
+            self.logger.info(f"{mode} {result.long_desc} is {result.res} at epoch {epoch_idx}")
+
+        if errors:
+            df = pd.DataFrame(errors)
+            self.logger.info(f"{df}")
+            outfile_name = f"confusion-matrix-step-{self.global_steps}.tsv"
+            print(f"saving error statistics: '{outfile_name}'")
+            df.to_csv(outfile_name, sep="\t", index=False)
         return results
 
 
     def predict_and_decode(self, batch_data, decode_fn):
         if len(batch_data) == 4:
             src, src_mask, trg, trg_mask = batch_data
+            pred, _ = decode_fn(self.model, src, src_mask)
+            self.evaluator.add(src, pred, trg)
         else:
             src, src_mask, trg, trg_mask, loss_mask = batch_data
-        pred, _ = decode_fn(self.model, src, src_mask)
-        self.evaluator.add(src, pred, trg)
+            pred, _ = decode_fn(self.model, src, src_mask)
+            self.evaluator.add(src, pred, trg, loss_mask)
         # data = (src, src_mask, trg, trg_mask)
-        losses, acc = self.model.get_loss(batch_data, reduction=False)
+        r = self.model.get_loss(batch_data, reduction=False)
+        if self.params.mask_loss:
+            losses, acc = r
+        else:
+            losses = r
         losses = losses.cpu()
+        #print("p and d: losses:", losses.size())
         return losses, pred, trg
+
+    def _get_loss(self, batch):
+            if self.params.mask_loss:
+                return self.model.get_loss(batch, ret_preds=True)
+            else:
+                return self.model.get_loss(batch)
+
+
+    def calc_loss(self, mode, batch_size, epoch_idx, return_acc=None, print_examples=False) -> float:
+        if self.params.mask_loss:
+            return self._calc_loss(mode, batch_size, epoch_idx, return_acc, print_examples)
+        else:
+            return super().calc_loss(mode, batch_size, epoch_idx, return_acc, print_examples)
+
+    def _calc_loss(self, mode, batch_size, epoch_idx, return_acc=None, print_examples=False) -> float:
+        self.model.eval()
+        sampler, nb_batch = self.iterate_batch(mode, batch_size)
+        loss, cnt = 0.0, 0
+        acc = 0
+
+        print_idx = random.randint(1, nb_batch)
+
+        for j, batch in enumerate(tqdm(sampler(batch_size), total=nb_batch)):
+            #if is_first:
+            #    src, src_mask, trg, trg_mask, loss_mask = batch
+            #    self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask, None, src, trg)
+
+            #loss += self.model.get_loss(batch).item()
+
+            ret = self._get_loss(batch)
+            if len(ret) == 3:
+                l, a, preds = ret
+            else:
+                l, a = ret
+            #print()
+            loss += l.item()
+            cnt += 1
+            acc += a.item()
+            if j == print_idx and len(batch) == 5:
+                src, src_mask, trg, trg_mask, loss_mask = batch
+                _, pred_ids = torch.topk(preds, 1)
+                self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask,
+                                          pred_ids.view(preds.size(0), preds.size(1)), src, trg,
+                                          logger=self.logger)
+
+        loss = loss / cnt
+        acc = acc / cnt
+        self.logger.info(f"Average {mode} loss is {loss} at epoch {epoch_idx}")
+        self.logger.info(f"Average {mode} accuracy is {acc} at epoch {epoch_idx}")
+        if return_acc:
+            loss = loss, acc
+        return loss
 
 
     def _score_update_best(self, best_res, m):
@@ -159,7 +237,7 @@ class DNTrainer(Trainer):
         with torch.no_grad():
             devloss = self.calc_loss(trainer.DEV, bs, epoch_idx, return_acc=True)
             acc = None
-            if len(devloss) == 2:
+            if self.params.mask_loss and len(devloss) == 2:
                 devloss, acc = devloss
             eval_res = self.evaluate(trainer.DEV, bs, epoch_idx, decode_fn, acc)
 
@@ -193,9 +271,14 @@ class DNTrainer(Trainer):
 
     def maybe_print(self, batch, is_first):
         if is_first and not self.params.finetuning:
-            src, src_mask, trg, trg_mask, loss_mask = batch
-            self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask, None, src, trg,
+            if self.params.mask_loss:
+                src, src_mask, trg, trg_mask, loss_mask = batch
+                self.evaluator.print_examples(self.evaluator.i2c, 5, loss_mask, None, src, trg,
                                           logger=self.logger)
+            else:
+                src, src_mask, trg, trg_mask = batch
+                loss_mask = None
+
         return False
 
     def update(self, cnt, loss, losses, max_norm, model, train_acc):
@@ -221,6 +304,60 @@ class DNTrainer(Trainer):
         return cnt, losses, train_acc
 
 
+    def reload_and_test(self, model_fp, best_fp, batch_size, decode_fn):
+        self.model = None
+        self.logger.info(f"loading {best_fp} for testing")
+        self.load_model(best_fp)
+        self.calc_loss(trainer.DEV, batch_size, -1)
+        self.logger.info("decoding dev set")
+        results = self.decode(trainer.DEV, batch_size, f"{model_fp}.decode", decode_fn)
+        if results:
+            for result in results:
+                self.logger.info(f"DEV {result.long_desc} is {result.res} at epoch -1")
+            results = " ".join([f"{r.desc} {r.res}" for r in results])
+            self.logger.info(f'DEV {model_fp.split("/")[-1]} {results}')
+
+        if self.data.test_file is not None:
+            self.calc_loss(trainer.TEST, batch_size, -1)
+            self.logger.info("decoding test set")
+            results = self.decode(trainer.TEST, batch_size, f"{model_fp}.decode", decode_fn)
+            if results:
+                for result in results:
+                    self.logger.info(
+                        f"TEST {result.long_desc} is {result.res} at epoch -1"
+                    )
+                results = " ".join([f"{r.desc} {r.res}" for r in results])
+                self.logger.info(f'TEST {model_fp.split("/")[-1]} {results}')
+
+    def decode(self, mode, batch_size, write_fp, decode_fn):
+        self.model.eval()
+        cnt = 0
+        sampler, nb_batch = self.iterate_batch(mode, batch_size)
+        with open(f"{write_fp}.{mode}.tsv", "w") as fp:
+            fp.write("prediction\ttarget\tloss\tdist\n")
+            for batch_data in tqdm(sampler(batch_size), total=nb_batch):
+                #print()
+                #print(len(batch_data))
+                losses, pred, trg = self.predict_and_decode(batch_data, decode_fn)
+                #print()
+                #print("trg:", trg.size())
+                #print("pred:", pred.size())
+                #print("losses:", losses.size())
+                trg, pred = Unpacker.unpack_trg_preds(trg, pred)
+                #print("trg:", trg)
+                #print("pred:", pred)
+                for p, t, loss in zip(pred, trg, losses):
+                    dist = util.edit_distance(p, t)
+                    p = self.data.decode_target(p)
+                    t = self.data.decode_target(t)
+                    fp.write(f'{" ".join(p)}\t{" ".join(t)}\t{loss.item()}\t{dist}\n')
+                    cnt += 1
+        self.logger.info(f"finished decoding {cnt} {mode} instance")
+        results = self.evaluator.compute(reset=True)
+        return results
+
+
+
 def main():
     """
     main
@@ -233,18 +370,30 @@ def main():
     trainer.load_data(params.dataset, params.train, params.dev, params.test)
     trainer.setup_evalutator()
 
-    if params.load and params.load != "0":
+    if params.load_eval:
+        start_epoch = trainer.smart_load_model(params.model)
+        best_fp, save_fps = trainer.select_model()
+        with torch.no_grad():
+            trainer.reload_and_test(params.model, best_fp, params.bs, decode_fn)
+            trainer.logger.info("Done evaluating model ...")
+            trainer.logger.info("Cleaning up ...")
+            trainer.cleanup(params.saveall, save_fps, params.model)
+            trainer.logger.info("done. exiting ...")
+            exit(0)
+    elif params.load and params.load != "0":
         if params.load == "smart":
             start_epoch = trainer.smart_load_model(params.model) + 1
         else:
             start_epoch = trainer.load_model(params.load) + 1
         trainer.logger.info("continue training from epoch %d", start_epoch)
         trainer.setup_training()
-        trainer.load_training(params.model)
+        trainer.load_training(params.model) # load optimizer and trainer
     elif params.finetuning:
         assert os.path.isfile(params.init)
         trainer.logger.info(f"Initializing with provided model {params.init}")
-        trainer.load_model(params.init)
+        trainer.build_model()
+        trainer.load_state_dict(params.init)
+        #trainer.load_model(params.init)
         trainer.setup_training()
         start_epoch = 0
 
@@ -254,8 +403,8 @@ def main():
         if params.init:
             if os.path.isfile(params.init):
                 trainer.load_state_dict(params.init)
-            else:
-                trainer.dump_state_dict(params.init)
+            #else:
+                #trainer.dump_state_dict(params.init)
         trainer.setup_training()
 
     #with torch.no_grad():
